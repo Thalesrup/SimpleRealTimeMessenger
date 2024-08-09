@@ -19,11 +19,12 @@ init([]) ->
     ]),
     io:format("WebSocket server listening on port ~p~n", [?PORT]),
     spawn(fun() -> accept(ListenSocket) end),
-    {ok, ListenSocket}.
+    {ok, #{sockets => []}}.  % Estado inicial, lista vazia de sockets
 
 accept(ListenSocket) ->
     {ok, Socket} = gen_tcp:accept(ListenSocket),
     io:format("New client connected: ~p~n", [Socket]),
+    gen_server:cast(?MODULE, {new_client, Socket}),
     spawn(fun() -> accept(ListenSocket) end),
     handle_websocket(Socket).
 
@@ -36,6 +37,7 @@ handle_websocket(Socket) ->
             loop(Socket);
         _ ->
             io:format("Handshake failed, closing connection: ~p~n", [Socket]),
+            gen_server:cast(?MODULE, {remove_client, Socket}),
             gen_tcp:close(Socket)
     end.
 
@@ -43,18 +45,36 @@ loop(Socket) ->
     case gen_tcp:recv(Socket, 0) of
         {ok, Data} ->
             io:format("Received data: ~p~n", [Data]),
-            % Decode the WebSocket frame and echo the message
             {ok, Message} = decode_frame(Data),
             io:format("Decoded message: ~p~n", [Message]),
-            Response = encode_frame(Message),
-            gen_tcp:send(Socket, Response),
+            gen_server:cast(?MODULE, {broadcast, Message}),
             loop(Socket);
         {error, closed} ->
             io:format("Connection closed by client: ~p~n", [Socket]),
+            gen_server:cast(?MODULE, {remove_client, Socket}),
             ok;
         {error, Reason} ->
             io:format("Unexpected error: ~p, closing connection: ~p~n", [Reason, Socket]),
+            gen_server:cast(?MODULE, {remove_client, Socket}),
             gen_tcp:close(Socket)
+    end.
+
+handle_cast(Msg, State) ->
+    case Msg of
+        {new_client, Socket} ->
+            NewState = maps:put(sockets, [Socket | maps:get(sockets, State)], State),
+            {noreply, NewState};
+
+        {remove_client, Socket} ->
+            NewState = maps:put(sockets, lists:delete(Socket, maps:get(sockets, State)), State),
+            {noreply, NewState};
+
+        {broadcast, Message} ->
+            Sockets = maps:get(sockets, State),
+            lists:foreach(fun(Socket) ->
+                gen_tcp:send(Socket, encode_frame(Message))
+            end, Sockets),
+            {noreply, State}
     end.
 
 create_handshake_response(Key) ->
@@ -94,44 +114,32 @@ decode_frame(_) ->
 
 decode_masked_frame(Length, <<MaskingKey:32, MaskedPayload/binary>>) ->
     % Aplica a chave de máscara ao payload
-    io:format("Decoding masked frame with key ~p and length ~p~n", [MaskingKey, Length]),
     Payload = apply_mask(<<MaskingKey:32>>, MaskedPayload),
     {ok, Payload}.
 
-apply_mask(_, <<>>, Acc) ->
-    Acc;
+apply_mask(_, <<>>, Acc) -> Acc;
 apply_mask(MaskKey, <<P:8, Rest/binary>>, Acc) ->
     <<M1:8, M2:8, M3:8, M4:8>> = MaskKey,
     DecodedByte = P bxor M1,
-    % Rotaciona a chave de máscara
-    NewMaskKey = <<M2, M3, M4, M1>>,
+    NewMaskKey = <<M2, M3, M4, M1>>,  % Rotaciona a chave de máscara
     apply_mask(NewMaskKey, Rest, <<Acc/binary, DecodedByte>>).
 
 apply_mask(MaskKey, MaskedPayload) ->
     apply_mask(MaskKey, MaskedPayload, <<>>).
 
 encode_frame(Message) ->
-    case Message of
-        {error, _Reason} ->
-            % Não envia mensagens de erro como resposta
-            <<>>;
-        _ ->
-            Length = byte_size(Message),
-            if
-                Length < 126 ->
-                    <<129, Length, Message/binary>>;
-                Length < 65536 ->
-                    <<129, 126, Length:16, Message/binary>>;
-                true ->
-                    <<129, 127, Length:64, Message/binary>>
-            end
+    Length = byte_size(Message),
+    if
+        Length < 126 ->
+            <<129, Length, Message/binary>>;
+        Length < 65536 ->
+            <<129, 126, Length:16, Message/binary>>;
+        true ->
+            <<129, 127, Length:64, Message/binary>>
     end.
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
-
-handle_cast(_Msg, State) ->
-    {noreply, State}.
 
 handle_info(_Info, State) ->
     {noreply, State}.
