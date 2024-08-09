@@ -20,3 +20,11 @@ SimpleRealTimeMessenger is a basic real-time messaging server implemented in Erl
 ```bash
 git clone https://github.com/yourusername/SimpleRealTimeMessenger.git
 cd SimpleRealTimeMessenger
+```
+
+### Run
+
+```bash
+erlc realtime_messenger.erl => compile
+erl -s realtime_messenger start_link => run at port 8089
+```
