@@ -28,3 +28,6 @@ cd SimpleRealTimeMessenger
 erlc realtime_messenger.erl => compile
 erl -s realtime_messenger start_link => run at port 8089
 ```
+### Web Implementation Example
+<br>
+Explore the web directory to see a fully styled real-time chat client, execute index.html
